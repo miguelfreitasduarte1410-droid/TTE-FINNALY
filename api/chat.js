@@ -2,13 +2,19 @@
 const projectContext = `
 PROJETO T.T.E — Technology Transform Education
 
-A T.T.E é uma empresa fictícia criada para um trabalho escolar. A proposta é transformar a educação por meio da tecnologia e tornar os estudos mais acessíveis, organizados, eficientes e interativos.
+A T.T.E é uma empresa fictícia criada para um trabalho escolar.
+Seu objetivo é mostrar como a tecnologia pode tornar os estudos
+mais acessíveis, organizados, eficientes e interativos.
 
-NeoNote: tablet inteligente conceitual que funciona como caderno e livro digital, com armazenamento e expansão por nuvem.
+NeoNote: conceito de tablet que funciona como caderno e livro
+digital, com armazenamento e expansão pela nuvem.
 
-NeoInk: caneta inteligente conceitual que traduz conteúdos, lê textos em voz alta e interage com o NeoNote.
+NeoInk: conceito de caneta inteligente que traduz conteúdos,
+lê textos em voz alta e interage com o NeoNote.
 
-T.T.E × 360 Tech: parceria conceitual com hologramas, projetor 3D e luvas interativas. Não é uma parceria comercial confirmada.
+T.T.E × 360 Tech: ideia de integração com hologramas,
+projetor 3D e luvas interativas. Não é uma parceria
+comercial confirmada.
 
 Autores: Miguel Freitas, Augusto Stein, Davi Acosta e Jean Carlos.
 Site desenvolvido por Miguel Freitas Duarte.
@@ -17,12 +23,16 @@ Instagram: @tte.futuro.
 
 const restrictedInstruction = `
 Você é J.A.R.V.I.S., assistente virtual da T.T.E.
-Responda em português brasileiro, naturalmente.
+Responda em português brasileiro de maneira natural e amigável.
 
-Responda somente sobre o projeto T.T.E., usando o contexto fornecido.
-Não invente informações sobre produtos, preços, resultados ou parcerias.
-Se perguntarem sobre outro assunto, explique brevemente que você
-está no modo restrito e só responde sobre a T.T.E.
+Responda SOMENTE sobre a T.T.E., usando o contexto fornecido.
+Não invente informações sobre produtos, preços ou parcerias.
+
+Se perguntarem sobre outro assunto, explique brevemente que
+você está no modo restrito ao projeto.
+
+Se não souber uma informação, diga que ela não foi definida
+no trabalho.
 
 Contexto:
 ${projectContext}
@@ -30,13 +40,14 @@ ${projectContext}
 
 const generalInstruction = `
 Você é J.A.R.V.I.S., um assistente de inteligência artificial.
-Responda perguntas sobre assuntos gerais em português brasileiro,
-de forma clara, útil e natural.
+Responda em português brasileiro, de modo claro, útil e natural.
 
-Não limite suas respostas ao projeto T.T.E.
-Siga as regras de segurança aplicáveis e evite inventar informações.
+Você pode responder perguntas sobre assuntos gerais,
+não apenas sobre a T.T.E.
 
-Se perguntarem sobre a T.T.E., utilize este contexto:
+Evite inventar informações e siga as regras de segurança aplicáveis.
+
+Para perguntas sobre a T.T.E., use este contexto:
 ${projectContext}
 `;
 
@@ -45,6 +56,7 @@ module.exports = async function handler(req, res) {
 
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
+
     return res.status(405).json({
       error: "Método não permitido."
     });
@@ -58,36 +70,40 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  try {
-    const message = String(req.body?.message || "").trim();
+  const message = String(req.body?.message ?? "").trim();
 
-    const mode = req.body?.mode === "general"
-      ? "general"
-      : "tte";
+  if (!message) {
+    return res.status(400).json({
+      error: "Digite uma pergunta."
+    });
+  }
 
-    if (!message) {
-      return res.status(400).json({
-        error: "Digite uma pergunta."
-      });
-    }
+  if (message.length > 1000) {
+    return res.status(413).json({
+      error: "A pergunta é muito longa. Tente resumir."
+    });
+  }
 
-    if (message.length > 1000) {
-      return res.status(413).json({
-        error: "A pergunta é muito longa. Tente resumir."
-      });
-    }
+  // O modo restrito é o padrão.
+  const mode =
+    req.body?.mode === "general" ? "general" : "tte";
 
-    const instruction = mode === "general"
+  const instruction =
+    mode === "general"
       ? generalInstruction
       : restrictedInstruction;
 
-    const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=" +
-      encodeURIComponent(apiKey),
+  const model =
+    process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+
+  try {
+    const upstream = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
         },
         body: JSON.stringify({
           systemInstruction: {
@@ -102,23 +118,34 @@ module.exports = async function handler(req, res) {
           generationConfig: {
             maxOutputTokens: 1200
           }
-        })
+        }),
+        signal: AbortSignal.timeout(25000)
       }
     );
 
-    const data = await response.json().catch(() => ({}));
+    const data = await upstream.json().catch(() => ({}));
 
-    if (!response.ok) {
-      console.error(
-        "Gemini API status:",
-        response.status,
-        data?.error?.message || "Erro desconhecido"
+    if (!upstream.ok) {
+      const status = upstream.status;
+      const providerCode = String(
+        data?.error?.status || "UNKNOWN"
+      );
+      const providerMessage = String(
+        data?.error?.message || "Sem detalhes"
       );
 
+      console.error("Gemini API:", {
+        status,
+        code: providerCode,
+        message: providerMessage,
+        model
+      });
+
       return res.status(502).json({
-        error:
-          "A IA não conseguiu responder agora. " +
-          "Confira a configuração e o limite de uso gratuito."
+        error: "Falha na comunicação com o Gemini.",
+        geminiStatus: status,
+        geminiCode: providerCode,
+        diagnosticId: `GEMINI_${status}`
       });
     }
 
@@ -129,17 +156,32 @@ module.exports = async function handler(req, res) {
       .join("")
       .trim();
 
+    if (!answer) {
+      console.error("Gemini sem texto de resposta:", {
+        finishReason:
+          data.candidates?.[0]?.finishReason || "UNKNOWN",
+        model
+      });
+
+      return res.status(502).json({
+        error: "O Gemini não retornou uma resposta em texto.",
+        diagnosticId: "GEMINI_EMPTY_RESPONSE"
+      });
+    }
+
     return res.status(200).json({
-      answer:
-        answer ||
-        "Não consegui gerar uma resposta para essa pergunta."
+      answer
     });
 
   } catch (error) {
-    console.error("Erro J.A.R.V.I.S.:", error.message);
+    console.error(
+      "Erro na conexão com Gemini:",
+      error?.message || "Erro desconhecido"
+    );
 
-    return res.status(500).json({
-      error: "Não foi possível processar a pergunta."
+    return res.status(502).json({
+      error: "Não foi possível conectar ao Gemini.",
+      diagnosticId: "GEMINI_CONNECTION_ERROR"
     });
   }
 };
